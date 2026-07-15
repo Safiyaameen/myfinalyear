@@ -4,12 +4,22 @@ node_modules/
 # Build output
 dist/
 
-# Environment files
+# Environment
 .env
 .dev.vars
 
 # Wrangler
 .wrangler/
+
+# TanStack
+.tanstack/tmp/
+
+# Supabase
+supabase/.temp/
+
+# Playwright
+playwright-report/
+test-results/
 
 # Logs
 *.log
@@ -18,10 +28,6 @@ dist/
 .vscode/
 .idea/
 
-# OS files
+# OS
 .DS_Store
 Thumbs.db
-
-# Playwright
-playwright-report/
-test-results/
