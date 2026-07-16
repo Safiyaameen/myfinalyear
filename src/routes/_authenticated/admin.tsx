@@ -1,7 +1,7 @@
 import { createFileRoute } from "@tanstack/react-router";
 import { useEffect } from "react";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
-import { ShieldCheck, X, Check, Users, Store, Package, AlertTriangle, Clock, Flag } from "lucide-react";
+import { ShieldCheck, X, Check, Users, Store, Package, AlertTriangle, Clock, Flag, Trash2 } from "lucide-react";
 import { supabase } from "@/integrations/supabase/client";
 import { useAuth } from "@/hooks/use-auth";
 import { TrustBadge } from "@/components/site/TrustBadge";
@@ -16,7 +16,6 @@ function AdminPage() {
   const { roles, loading } = useAuth();
   const qc = useQueryClient();
 
-  // Run the automated final-badge check every time the admin panel loads
   useEffect(() => {
     if (roles.includes("admin")) {
       supabase.rpc("finalize_shop_verifications").then(({ error }) => {
@@ -127,20 +126,29 @@ function AdminPage() {
     qc.invalidateQueries({ queryKey: ["admin-counts"] });
   };
 
+  const deleteShop = async (id: string, name: string) => {
+    if (!window.confirm(`Permanently delete "${name}" and all its products, orders, and reports? This can't be undone.`)) {
+      return;
+    }
+    const { error } = await supabase.rpc("admin_delete_shop", {
+      p_shop_id: id,
+    });
+    if (error) return toast.error(error.message);
+    toast.success(`${name} deleted`);
+    qc.invalidateQueries({ queryKey: ["admin-shops"] });
+    qc.invalidateQueries({ queryKey: ["admin-counts"] });
+  };
+
   const pending = (shops.data ?? []).filter((s: any) => s.status === "pending");
   const approved = (shops.data ?? []).filter((s: any) => s.status === "approved");
   const rejected = (shops.data ?? []).filter((s: any) => s.status === "rejected");
   const pendingReports = (reports.data ?? []).filter((r: any) => r.status === "pending");
 
-  // Live report count per shop, computed from the actual reports table
-  // rather than the shops.report_count column (which is never kept in sync).
   const reportCountByShop = (reports.data ?? []).reduce((acc: Record<string, number>, r: any) => {
     if (r.shop_id) acc[r.shop_id] = (acc[r.shop_id] ?? 0) + 1;
     return acc;
   }, {});
 
-  // Live order/return counts per shop, computed from the actual orders table
-  // rather than the shops.order_count / return_count columns (also never synced).
   const orderStatsByShop = (allOrders.data ?? []).reduce(
     (acc: Record<string, { total: number; returned: number }>, o: any) => {
       if (!o.shop_id) return acc;
@@ -152,7 +160,6 @@ function AdminPage() {
     {},
   );
 
-  // Helper to get monitoring status
   const getMonitoringStatus = (shop: any) => {
     if (!shop.monitoring_end_date) return null;
     const end = new Date(shop.monitoring_end_date);
@@ -162,7 +169,6 @@ function AdminPage() {
     return { label: `${daysLeft} days left in monitoring`, color: "text-gold", done: false };
   };
 
-  // Helper for return rate — computed live from real orders, not stale columns
   const getReturnRate = (shop: any) => {
     const stats = orderStatsByShop[shop.id];
     if (!stats || stats.total === 0) return 0;
@@ -174,7 +180,6 @@ function AdminPage() {
       <p className="text-xs font-medium uppercase tracking-[0.18em] text-gold">Admin</p>
       <h1 className="mt-2 font-display text-4xl font-semibold">City control panel</h1>
 
-      {/* Stats */}
       <div className="mt-8 grid gap-3 sm:grid-cols-5">
         <Metric icon={Users} label="Users" value={counts.data?.users ?? "…"} />
         <Metric icon={Store} label="Approved shops" value={counts.data?.shops ?? "…"} />
@@ -183,7 +188,6 @@ function AdminPage() {
         <Metric icon={Flag} label="Pending reports" value={counts.data?.reports ?? "…"} color="text-destructive" />
       </div>
 
-      {/* Pending Approvals */}
       <section className="mt-10">
         <h2 className="font-display text-2xl font-semibold">
           Pending approvals ({pending.length})
@@ -198,6 +202,7 @@ function AdminPage() {
               reportCount={reportCountByShop[s.id] ?? 0}
               onApprove={() => setStatus(s.id, "approved")}
               onReject={() => setStatus(s.id, "rejected")}
+              onDelete={() => deleteShop(s.id, s.name)}
             />
           ))}
           {pending.length === 0 && (
@@ -208,7 +213,6 @@ function AdminPage() {
         </div>
       </section>
 
-      {/* Customer Reports */}
       <section className="mt-12">
         <h2 className="font-display text-2xl font-semibold">
           Customer Reports ({pendingReports.length})
@@ -258,7 +262,6 @@ function AdminPage() {
         </div>
       </section>
 
-      {/* Approved Shops with Monitoring */}
       <section className="mt-12">
         <h2 className="font-display text-2xl font-semibold">
           All shops ({approved.length})
@@ -278,12 +281,12 @@ function AdminPage() {
               reportCount={reportCountByShop[s.id] ?? 0}
               onApprove={() => setStatus(s.id, "approved")}
               onReject={() => setStatus(s.id, "rejected")}
+              onDelete={() => deleteShop(s.id, s.name)}
             />
           ))}
         </div>
       </section>
 
-      {/* Rejected Shops */}
       {rejected.length > 0 && (
         <section className="mt-12">
           <h2 className="font-display text-2xl font-semibold">
@@ -299,6 +302,7 @@ function AdminPage() {
                 reportCount={0}
                 onApprove={() => setStatus(s.id, "approved")}
                 onReject={() => setStatus(s.id, "rejected")}
+                onDelete={() => deleteShop(s.id, s.name)}
               />
             ))}
           </div>
@@ -336,6 +340,7 @@ function ShopRow({
   reportCount,
   onApprove,
   onReject,
+  onDelete,
 }: {
   shop: any;
   monitoringStatus: any;
@@ -343,6 +348,7 @@ function ShopRow({
   reportCount: number;
   onApprove: () => void;
   onReject: () => void;
+  onDelete: () => void;
 }) {
   return (
     <div className="flex flex-col gap-4 rounded-2xl border border-border bg-card p-4 sm:flex-row sm:items-start">
@@ -381,7 +387,6 @@ function ShopRow({
           <div className="mt-0.5 text-xs text-muted-foreground">{shop.address}</div>
         )}
 
-        {/* Monitoring Info */}
         <div className="mt-3 flex flex-wrap gap-3">
           {monitoringStatus && (
             <div className={`flex items-center gap-1 text-xs ${monitoringStatus.color}`}>
@@ -419,6 +424,12 @@ function ShopRow({
           className="inline-flex items-center gap-1 rounded-full border border-destructive/30 px-3.5 py-2 text-xs font-medium text-destructive"
         >
           <X className="h-3.5 w-3.5" /> Reject
+        </button>
+        <button
+          onClick={onDelete}
+          className="inline-flex items-center gap-1 rounded-full bg-destructive px-3.5 py-2 text-xs font-medium text-white"
+        >
+          <Trash2 className="h-3.5 w-3.5" /> Delete
         </button>
       </div>
     </div>

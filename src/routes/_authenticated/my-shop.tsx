@@ -32,13 +32,17 @@ function MyShopPage() {
     queryKey: ["my-shop", user?.id],
     enabled: !!user,
     queryFn: async () => {
-      const { data } = await supabase
+      const { data, error } = await supabase
         .from("shops")
         .select("*")
         .eq("owner_id", user!.id)
         .order("created_at", { ascending: false })
         .limit(1)
         .maybeSingle();
+      if (error) {
+        toast.error(`Failed to load shop: ${error.message}`);
+        throw error;
+      }
       return data;
     },
   });
@@ -47,11 +51,15 @@ function MyShopPage() {
     queryKey: ["my-products", shopQ.data?.id],
     enabled: !!shopQ.data?.id,
     queryFn: async () => {
-      const { data } = await supabase
+      const { data, error } = await supabase
         .from("products")
         .select("*")
         .eq("shop_id", shopQ.data!.id)
         .order("created_at", { ascending: false });
+      if (error) {
+        toast.error(`Failed to load products: ${error.message}`);
+        throw error;
+      }
       return data ?? [];
     },
   });
@@ -60,11 +68,15 @@ function MyShopPage() {
     queryKey: ["shop-orders", shopQ.data?.id],
     enabled: !!shopQ.data?.id,
     queryFn: async () => {
-      const { data } = await supabase
+      const { data, error } = await supabase
         .from("orders")
         .select("id, quantity, total, status, created_at, products(title, image_url)")
         .eq("shop_id", shopQ.data!.id)
         .order("created_at", { ascending: false });
+      if (error) {
+        toast.error(`Failed to load orders: ${error.message}`);
+        throw error;
+      }
       return data ?? [];
     },
   });
@@ -78,7 +90,10 @@ function MyShopPage() {
         .select("*")
         .eq("shop_id", shopQ.data!.id)
         .order("created_at", { ascending: false });
-      if (error) throw error;
+      if (error) {
+        toast.error(`Failed to load reports: ${error.message}`);
+        throw error;
+      }
       return data ?? [];
     },
   });
@@ -87,6 +102,26 @@ function MyShopPage() {
     return (
       <div className="mx-auto max-w-3xl px-6 py-24 text-center text-sm text-muted-foreground">
         Loading your shop…
+      </div>
+    );
+  }
+
+  if (shopQ.isError) {
+    return (
+      <div className="mx-auto max-w-xl px-6 py-24 text-center">
+        <div className="mx-auto grid h-16 w-16 place-items-center rounded-full bg-destructive/10">
+          <AlertTriangle className="h-7 w-7 text-destructive" />
+        </div>
+        <h1 className="mt-6 font-display text-2xl font-semibold">Couldn't load your shop</h1>
+        <p className="mt-2 text-sm text-muted-foreground">
+          {(shopQ.error as any)?.message ?? "Something went wrong talking to the server."}
+        </p>
+        <button
+          onClick={() => qc.invalidateQueries({ queryKey: ["my-shop"] })}
+          className="mt-6 inline-flex items-center gap-2 rounded-full bg-foreground px-5 py-2.5 text-sm font-semibold text-background"
+        >
+          Retry
+        </button>
       </div>
     );
   }
@@ -516,6 +551,43 @@ function ProductRow({
 }) {
   const fileInputRef = useRef<HTMLInputElement>(null);
   const [uploading, setUploading] = useState(false);
+  const [deleting, setDeleting] = useState(false);
+
+  const [restockAmount, setRestockAmount] = useState("");
+  const [restocking, setRestocking] = useState(false);
+
+  const handleRestock = async () => {
+    const amount = Number(restockAmount);
+    if (!amount || amount <= 0) {
+      toast.error("Enter a valid quantity");
+      return;
+    }
+    setRestocking(true);
+    try {
+      const { error, data } = await supabase
+        .from("products")
+        .update({ stock: product.stock + amount })
+        .eq("id", product.id)
+        .select();
+
+      if (error) {
+        toast.error(`Restock failed: ${error.message}`);
+        return;
+      }
+      if (!data || data.length === 0) {
+        toast.error("Restock was blocked (RLS) — you may not own this product.");
+        return;
+      }
+
+      toast.success(`Restocked +${amount} units`);
+      setRestockAmount("");
+      onChanged();
+    } catch (err: any) {
+      toast.error(err.message ?? "Restock failed");
+    } finally {
+      setRestocking(false);
+    }
+  };
 
   const handleImageChange = async (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0];
@@ -553,6 +625,62 @@ function ProductRow({
     }
   };
 
+  const handleDelete = async () => {
+    if (!window.confirm(`Delete "${product.title}"? This can't be undone.`)) return;
+
+    setDeleting(true);
+    try {
+      const { error, data } = await supabase
+        .from("products")
+        .delete()
+        .eq("id", product.id)
+        .select();
+
+      if (error) {
+        toast.error(`Couldn't delete: ${error.message}`);
+        return;
+      }
+
+      // If RLS silently blocks a delete, Supabase returns success with an empty
+      // array instead of an error — catch that case explicitly.
+      if (!data || data.length === 0) {
+        toast.error("Delete was blocked (no matching row you own). Try logging out and back in.");
+        return;
+      }
+
+      toast.success("Product deleted");
+      onChanged();
+    } catch (err: any) {
+      toast.error(err.message ?? "Failed to delete product");
+    } finally {
+      setDeleting(false);
+    }
+  };
+
+<div className="min-w-0">
+  <div className="truncate text-sm font-semibold">{product.title}</div>
+  <div className="text-xs text-muted-foreground">
+    {product.category} · {product.stock} in stock
+  </div>
+  <div className="mt-1 flex items-center gap-1">
+    <input
+      type="number"
+      min="1"
+      value={restockAmount}
+      onChange={(e) => setRestockAmount(e.target.value)}
+      placeholder="Qty"
+      className="w-16 rounded-md border border-border bg-card px-2 py-0.5 text-xs"
+    />
+    <button
+      onClick={handleRestock}
+      disabled={restocking}
+      className="rounded-md bg-trust/10 px-2 py-0.5 text-xs font-medium text-trust hover:bg-trust/20 disabled:opacity-50"
+    >
+      {restocking ? "..." : "Restock"}
+    </button>
+  </div>
+</div>
+
   return (
     <div className="flex items-center justify-between gap-3 py-3">
       <div className="flex min-w-0 items-center gap-3">
@@ -569,6 +697,23 @@ function ProductRow({
           <div className="truncate text-sm font-semibold">{product.title}</div>
           <div className="text-xs text-muted-foreground">
             {product.category} · {product.stock} in stock
+          </div>
+          <div className="mt-1 flex items-center gap-1">
+            <input
+              type="number"
+              min="1"
+              value={restockAmount}
+              onChange={(e) => setRestockAmount(e.target.value)}
+              placeholder="Qty"
+              className="w-16 rounded-md border border-border bg-card px-2 py-0.5 text-xs"
+            />
+            <button
+              onClick={handleRestock}
+              disabled={restocking}
+              className="rounded-md bg-trust/10 px-2 py-0.5 text-xs font-medium text-trust hover:bg-trust/20 disabled:opacity-50"
+            >
+              {restocking ? "..." : "Restock"}
+            </button>
           </div>
         </div>
       </div>
@@ -591,11 +736,9 @@ function ProductRow({
         />
 
         <button
-          onClick={async () => {
-            await supabase.from("products").delete().eq("id", product.id);
-            onChanged();
-          }}
-          className="text-muted-foreground hover:text-destructive"
+          onClick={handleDelete}
+          disabled={deleting}
+          className="text-muted-foreground hover:text-destructive disabled:opacity-50"
         >
           <Trash2 className="h-4 w-4" />
         </button>
